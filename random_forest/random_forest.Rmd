@@ -12,8 +12,6 @@ knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE, fig.align =
 wd <- '~/Dropbox/Data/Projects/regression-trees'
 ```
 
-## Why
-
 This is a step-by-step guide to build a random forest classification algorithm in "base" R from the bottom-up. We'll start with the Gini impurity metric then move to decision trees and then ensemble methods. R has many packages that include -- faster and better -- implementations of random forest. The goal of this guide is to walk through the fundamentals. The final algorithm will be functional but it is not robust to bugs or programming edge cases. The goal is to provide you with an accurate mental model of how random forest works and, therefore, intuition to where it will perform well and where it fall short.
 
 ## Process
@@ -229,11 +227,13 @@ quick_sort(X)
 
 We're going to pull together all the above functions into one recursive function that becomes the decision tree classifier. 
 
+TODO: explain outline of function
 
-Stopping criteria:
-- max_depth: the depth or number of splits in the tree
-- min_observations: the fewest number of observations to include in a split
-- gini_threshold: the gini impurity amount of the split. Lower = more pure
+Stopping criteria:  
+
+- `max_depth`: the depth or number of splits in the tree  
+- `min_observations`: the fewest number of observations to include in a split  
+- `gini_threshold`: the gini impurity amount of the split. Stops if it falls below this  
 
 ```{r decision_tree_classifier}
 # create a dataframe denoting the best splits
@@ -360,16 +360,14 @@ Now finally we can test our decision tree classifier on data. Decision trees per
 ```{r example_data}
 # create a two dimensional dataset
 n <- 1000
-.data <- tibble(Y = c(rep(0, n/4), rep(0, n/4), rep(0, n/4), rep(1, n/4)),
-                X1 = c(runif(n/4, -1, 0), runif(n/4, -1, 0), runif(n/4, 0, 1), runif(n/4, 0, 1)),
-                X2 = c(runif(n/4, -1, 0), runif(n/4, 0, 1), runif(n/4, 0, 1), runif(n/4, -1, 0)))
+.data <- tibble(X1 = runif(n, -1, 1),
+                X2 = runif(n, -1, 1),
+                Y = (round(X1) == round(X2)) * 1)
 
 # plot it
 .data %>% 
   mutate(Y = paste0("Class ", Y)) %>% 
   ggplot(aes(x = X1, y = X2, shape = Y)) +
-  geom_vline(xintercept = 0, linetype = 'dashed') +
-  geom_hline(yintercept = 0, linetype = 'dashed') +
   geom_point(size = 3, alpha = 0.5) +
   labs(shape = NULL)
 ```
@@ -389,8 +387,6 @@ model_log <- glm(Y ~ X1 + X2, data = .data, family = 'binomial')
          correct = if_else(preds == Y, "Correct classification", "Incorrect"),
          Y = paste0("Class ", Y)) %>% 
   ggplot(aes(x = X1, y = X2, shape = Y, color = correct)) +
-  geom_vline(xintercept = 0, linetype = 'dashed') +
-  geom_hline(yintercept = 0, linetype = 'dashed') +
   geom_point(size = 3, alpha = 0.5) +
   scale_color_manual(values = c('#5f7d71', 'red')) +
   labs(color = NULL,
@@ -400,13 +396,12 @@ model_log <- glm(Y ~ X1 + X2, data = .data, family = 'binomial')
 ggsave(file.path(wd, "random_forest/plots/logistic_classes.png"), width = 8, height = 6)
 ```
 
-Logistic regression is performly poorly. Note that an interaction would help with model. These "square" data suit the decision tree classifier well. Below, the clasifier almost correctly classifies all points. The incorrect points all lie around the boundary between Class 0 and Class 1. I believe this is due to the `splits` in `optimal_split` not being granular enough.
-
+Logistic regression is performing poorly.  These "square" data suit the decision tree classifier well. Below, the classifier almost correctly classifies all points. The incorrect points all lie around the boundary between Class 0 and Class 1. This may be due to the `splits` in `optimal_split` not being granular enough.
 
 ```{r plot_rpart_example}
-X <- .data[, -1]
-Y <- .data[[1]]
-model_decision_tree <- decision_tree_classifier(X, Y, max_depth = 5, gini_threshold = 0.01, min_observations = 3)
+X <- dplyr::select(.data, -Y)
+Y <- .data[['Y']]
+model_decision_tree <- decision_tree_classifier(X, Y, max_depth = 4, gini_threshold = 0, min_observations = 1)
 preds <- predict_decision_tree(model_decision_tree, X)
 
 # plot it
@@ -415,8 +410,6 @@ preds <- predict_decision_tree(model_decision_tree, X)
          correct = if_else(preds == Y, "Correct classification", "Incorrect"),
          Y = paste0("Class ", Y)) %>% 
   ggplot(aes(x = X1, y = X2, shape = Y, color = correct)) +
-  geom_vline(xintercept = 0, linetype = 'dashed') +
-  geom_hline(yintercept = 0, linetype = 'dashed') +
   geom_point(size = 3, alpha = 0.5) +
   scale_color_manual(values = c('#5f7d71', 'red')) +
   labs(color = NULL,
@@ -427,12 +420,8 @@ ggsave(file.path(wd, "random_forest/plots/tree_classes.png"), width = 8, height 
 ```
 
 
-We can visualize the splits made the decision tree classifier. As expected, these splits are right along the quadrant boundaries.
+We can visualize the splits made the decision tree classifier. As expected, these splits are right along the rectangle boundaries.
 
-
-```{r}
-head(model_decision_tree)
-```
 ```{r}
 splits_X1 <- split(model_decision_tree, model_decision_tree$column)[[1]]
 splits_X2 <- split(model_decision_tree, model_decision_tree$column)[[2]]
@@ -442,8 +431,6 @@ splits_X2 <- split(model_decision_tree, model_decision_tree$column)[[2]]
          correct = if_else(preds == Y, "Correct classification", "Incorrect"),
          Y = paste0("Class ", Y)) %>% 
   ggplot(aes(x = X1, y = X2, shape = Y, color = correct)) +
-  geom_vline(xintercept = 0, linetype = 'dashed') +
-  geom_hline(yintercept = 0, linetype = 'dashed') +
   geom_vline(data = splits_X1, aes(xintercept = split), color = 'blue') +
   geom_hline(data = splits_X2, aes(yintercept = split), color = 'blue') +
   geom_point(size = 3, alpha = 0.5) +
@@ -455,23 +442,95 @@ splits_X2 <- split(model_decision_tree, model_decision_tree$column)[[2]]
 ggsave(file.path(wd, "random_forest/plots/tree_boundaries.png"), width = 8, height = 6)
 ```
 
+### Where trees can struggle
+
+Trees will struggle when the parameter space is dissected at an angle by the classification value. Regression trees are partitioning the parameter space into rectangles. Any time the the classification value is not rectangular, the regression tree will need to be deeper to estimate the decision boundary.
+
+The below data's classification is in two separate triangles: top left and bottom right of the plot. A logistic regression finds the boundary easily.
+
+```{r}
+# create a two dimensional dataset
+n <- 1000
+.data <- tibble(X1 = runif(n, 0, 1),
+                X2 = runif(n, 0, 1),
+                Y = (X1 > X2) * 1)
+
+# logistic regression
+model_log <- glm(Y ~ X1 + X2, data = .data, family = 'binomial')
+
+# plot it
+.data %>% 
+  mutate(preds = model_log$fitted.values > 0.5, 
+         correct = if_else(preds == Y, "Correct classification", "Incorrect"),
+         Y = paste0("Class ", Y)) %>% 
+  ggplot(aes(x = X1, y = X2, shape = Y, color = correct)) +
+  geom_point(size = 3, alpha = 0.5) +
+  scale_color_manual(values = c('#5f7d71', 'red')) +
+  labs(color = NULL,
+       shape = NULL)
+```
+
+A regression tree has a difficult time finding the decision boundary.
+
+```{r plot_rpart_example_two}
+X <- dplyr::select(.data, -Y)
+Y <- .data[['Y']]
+model_decision_tree <- decision_tree_classifier(X, Y, max_depth = 2, gini_threshold = 0, min_observations = 1)
+preds <- predict_decision_tree(model_decision_tree, X)
+
+# plot it
+.data %>% 
+  mutate(preds = preds > 0.5, 
+         correct = if_else(preds == Y, "Correct classification", "Incorrect"),
+         Y = paste0("Class ", Y)) %>% 
+  ggplot(aes(x = X1, y = X2, shape = Y, color = correct)) +
+  geom_point(size = 3, alpha = 0.5) +
+  scale_color_manual(values = c('#5f7d71', 'red')) +
+  labs(color = NULL,
+       shape = NULL)
+```
+
+The six rectangles the decision tree fit are not enough to estimate the angled boundary.
+
+```{r splits_two}
+splits_X1 <- split(model_decision_tree, model_decision_tree$column)[[1]]
+splits_X2 <- split(model_decision_tree, model_decision_tree$column)[[2]]
+
+# plot it
+.data %>% 
+  mutate(preds = preds > 0.5, 
+         correct = if_else(preds == Y, "Correct classification", "Incorrect"),
+         Y = paste0("Class ", Y)) %>% 
+  ggplot(aes(x = X1, y = X2, shape = Y, color = correct)) +
+  geom_vline(data = splits_X1, aes(xintercept = split), color = 'blue') +
+  geom_hline(data = splits_X2, aes(yintercept = split), color = 'blue') +
+  geom_point(size = 3, alpha = 0.5) +
+  scale_color_manual(values = c('#5f7d71', 'red')) +
+  labs(color = NULL,
+       shape = NULL)
+```
+
 ## Bagging
 
+Single decision trees are prone to overfiting and can have high variance on new data. A simple solution is to create many decision trees based on resamples of the data and allow each tree to "vote" on the final classification. This is bagging.
+
+The "vote" from each tree is their prediction for a given observations. The votes are averaged across all the trees and the final classification is determined from this average. The trees are trained on [bootstrapped data](https://online.stat.psu.edu/stat555/node/119/) -- taking repeated samples of the training data with replacement.
 
 ```{r bag_it}
-bag_it <- function(X, Y, n_trees = 100, max_depth = 5, gini_threshold = 0.2, min_observations = 5){
+bag_it <- function(X_train, Y_train, X_test, n_trees = 100, max_depth = 5, gini_threshold = 0.2, min_observations = 5){
   
+  # grow the trees
   preds <- parallel::mclapply(1:n_trees, function(i){
     
     preds <- tryCatch({
       # bootstrap the data
-      sample_indices <- sample(1:nrow(X), size = nrow(X), replace = TRUE)
-      X_sampled <- X[sample_indices,]
-      Y_sampled <- Y[sample_indices]
+      sample_indices <- sample(1:nrow(X_train), size = nrow(X_train), replace = TRUE)
+      X_sampled <- X_train[sample_indices,]
+      Y_sampled <- Y_train[sample_indices]
       
       # fit model on subset and then make predictions on all data
       model_decision_tree <- decision_tree_classifier(X_sampled, Y_sampled, max_depth = max_depth, gini_threshold = gini_threshold, min_observations = min_observations)
-      preds <- predict_decision_tree(model_decision_tree, X)
+      preds <- predict_decision_tree(model_decision_tree, X_test)
     },
     error = function(e) NA
     )
@@ -487,30 +546,41 @@ bag_it <- function(X, Y, n_trees = 100, max_depth = 5, gini_threshold = 0.2, min
 ```
 
 ```{r}
-# credit <- read_csv(file.path(wd, "data/credit.csv"))
-# X_cols <- c('months_loan_duration', 'amount', 'existing_loans_count', 'percent_of_income', 'years_at_residence', 'age')
-# X <- credit[, X_cols]
-# Y <- credit$default == 'yes' 
-# preds <- bag_it(X, Y, max_depth = 5, gini_threshold = 0.20, min_observations = 5)
-# table(preds > 0.5, Y)
+# read in the credit data
+credit <- read_csv(file.path(wd, "data/credit_card.csv"))
+X <- select(credit, -Class)
+Y <- credit$Class
+
+# create train test split
+indices <- sample(c(TRUE, FALSE), size = nrow(credit), replace = TRUE, prob = c(0.5, 0.5))
+X_train <- X[indices,]
+X_test <- X[!indices,]
+Y_train <- Y[indices]
+Y_test <- Y[!indices]
+```
+```{r}
+# fit the bagged model
+preds <- bag_it(X_train, Y_train, X_test, n_trees = 50, max_depth = 10, gini_threshold = 0, min_observations = 5)
+table(preds > 0.5, Y_test)
 ```
 
 
 ## Random forest
 
-We use the square root of the number of columns as the sampling...
+Random forest is exactly like bagging except that in addition to bootstrapping the observations, you also take a random subset of the features. Usually the number of features selected is the sqrt of the total number of features.
 
 ```{r random_forest}
-random_forest <- function(X, Y, n_trees = 100, max_depth = 5, gini_threshold = 0.2, min_observations = 5){
+random_forest <- function(X_train, Y_train, X_test, n_trees = 100, max_depth = 5, gini_threshold = 0.2, min_observations = 5){
   
+  # grow the trees
   preds <- parallel::mclapply(1:n_trees, function(i){
     
     preds <- tryCatch({
       # bootstrap the data
-      sample_indices <- sample(1:nrow(X), size = nrow(X), replace = TRUE)
-      sample_columns <- sample(1:ncol(X), size = ceiling(sqrt(ncol(X))), replace = FALSE)
-      X_sampled <- X[sample_indices, sample_columns]
-      Y_sampled <- Y[sample_indices]
+      sample_indices <- sample(1:nrow(X_train), size = nrow(X_train), replace = TRUE)
+      sample_columns <- sample(1:ncol(X_train), size = ceiling(sqrt(ncol(X_train))), replace = FALSE)
+      X_sampled <- X_train[sample_indices, sample_columns]
+      Y_sampled <- Y_train[sample_indices]
       
       # fit model on subset and then make predictions on all data
       model_decision_tree <- decision_tree_classifier(
@@ -520,7 +590,7 @@ random_forest <- function(X, Y, n_trees = 100, max_depth = 5, gini_threshold = 0
         gini_threshold = gini_threshold, 
         min_observations = min_observations
       )
-      preds <- predict_decision_tree(model_decision_tree, X)
+      preds <- predict_decision_tree(model_decision_tree, X_test)
     },
     error = function(e) NA
     )
@@ -536,24 +606,33 @@ random_forest <- function(X, Y, n_trees = 100, max_depth = 5, gini_threshold = 0
 ```
 
 ```{r}
-# preds <- random_forest(X, Y, n_trees = 500, max_depth = 5, gini_threshold = 0.20, min_observations = 5)
-# table(preds > 0.5, Y)
+# fit the random forest
+preds <- random_forest(X_train, Y_train, X_test, n_trees = 50, max_depth = 10, gini_threshold = 0, min_observations = 5)
+table(preds > 0.5, Y_test)
 ```
 
 Compare this against the `ranger` package.
 
 ```{r}
-# model_ranger <- ranger::ranger(reformulate(X_cols, 'default'), data = credit, num.trees = 500)
-# table(model_ranger$predictions, credit$default)
+model_ranger <- ranger::ranger(Class ~ ., data = credit[indices,], num.trees = 50, max.depth = 10)
+preds <- predict(model_ranger, data = credit[!indices,])$predictions
+table(preds > 0.5, credit$Class[!indices])
 ```
+Not bad results!
 
 
 ## Conclusion
 
+Benefits of tree methods:  
 
+  - Single trees are easy to explain and interpret  
+  - Allows for both classification and regression  
+    - For regression, replace the Gini impurity measure with variance of the outcome variable  
+  - Allows for binary, continuous, and categorical (with dummy coding) variables  
+  - Can handle missing data (if data is not used within a branch)  
+  - Ensemble methods are computationally parallelizable  
+  
+Downsides:  
 
-## Limitations
-
-This method excludes categorically variables but dummy coding them will work.
-
-
+  - Single trees are easy to overfit  
+  - Single trees have high variance  
