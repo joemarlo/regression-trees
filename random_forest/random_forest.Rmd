@@ -1,5 +1,5 @@
 ---
-title: "Random forest bottom up -- a tutorial"
+title: "Bottom-up random forest, a tutorial"
 author: "Joe Marlo"
 date: "4/23/2021"
 output:
@@ -13,7 +13,7 @@ knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE, fig.align =
 
 ## Why
 
-This is a step-by-step guide to build a random forest algorithm in "base" R from the bottom-up. We'll start with the Gini impurity metric then move to decision trees and then ensemble methods. R has many packages that include -- faster and better -- implementations of random forest. The goal of this guide is to walk through the fundamentals. The final algorithm will be functional but it is not robust to bugs or programming edge cases. Just use [`ranger`](https://arxiv.org/pdf/1508.04409.pdf) if you want a production algorithm.
+This is a step-by-step guide to build a random forest classification algorithm in "base" R from the bottom-up. We'll start with the Gini impurity metric then move to decision trees and then ensemble methods. R has many packages that include -- faster and better -- implementations of random forest. The goal of this guide is to walk through the fundamentals. The final algorithm will be functional but it is not robust to bugs or programming edge cases. Just use [`ranger`](https://arxiv.org/pdf/1508.04409.pdf) if you want a production algorithm.
 
 ## Process
 
@@ -40,7 +40,8 @@ set.seed(44)
 ```
 
 ```{r include=FALSE}
-source("~/Dropbox/Data/Projects/regression-trees/helpers/ggplot_settings.R")
+wd <- '~/Dropbox/Data/Projects/regression-trees'
+source(file.path(wd, "helpers/ggplot_settings.R"))
 ```
 
 ## Gini index
@@ -57,7 +58,7 @@ ggplot(tibble(p, gini(p)), aes(x = p, y = `gini(p)`)) +
   geom_point(size = 3)
 ```
 ```{r include=FALSE}
-ggsave("~/Dropbox/Data/Projects/regression-trees/random_forest/plots/gini.svg", width = 8, height = 4)
+ggsave(file.path(wd, "random_forest/plots/gini.svg"), width = 8, height = 4)
 ```
 
 
@@ -138,7 +139,7 @@ tibble(x = X, y = 0, col = classes) %>%
 ```
 
 ```{r include=FALSE}
-ggsave("~/Dropbox/Data/Projects/regression-trees/random_forest/plots/optimal_split.svg", width = 8, height = 3)
+ggsave(file.path(wd, "random_forest/plots/optimal_split.svg"), width = 8, height = 3)
 ```
 
 Best feature to split on
@@ -210,14 +211,21 @@ quick_sort(X)
 
 We're going to pull together all the above functions into one recursive function that becomes the decision tree classifier. 
 
+
+Stopping criteria:
+- max_depth: the depth or number of splits in the tree
+- min_observations: the fewest number of observations to include in a split
+- gini_threshold: the gini impurity amount of the split. Lower = more pure
+
 ```{r decision_tree_classifier}
 # create a dataframe denoting the best splits
-decision_tree_classifier <- function(X, Y, gini_threshold = 0.4, max_depth = 5, min_rows = 5, branch_id = '0', splits = NULL){
+decision_tree_classifier <- function(X, Y, gini_threshold = 0.4, max_depth = 5, min_observations = 5, branch_id = '0', splits = NULL){
   
-  # calculate the first best split
+  
+  # calculate the first optimal split
   first_split <- best_feature_to_split(X, Y)
   
-  # log the split
+  # save the splits
   if (is.null(splits)) splits <- tibble()
   splits <- bind_rows(splits, tibble(column = first_split$column, 
                                      split = first_split$split,
@@ -234,33 +242,41 @@ decision_tree_classifier <- function(X, Y, gini_threshold = 0.4, max_depth = 5, 
   X_split <- split(X, X[first_split$column] >= first_split$split)
   Y_split <- split(Y, X[first_split$column] >= first_split$split)
   
-  # return the current list of splits or continue splitting
+  # stopping criteria
   is_too_deep <- isTRUE(branch_depth >= max_depth)
   is_pure_enough <- isTRUE(first_split$gini <= gini_threshold)
-  too_few_observations <- isTRUE(min(sapply(X_split, nrow)) < min_rows)
+  too_few_observations <- isTRUE(min(sapply(X_split, nrow)) < min_observations)
   if (is_too_deep | is_pure_enough | too_few_observations){
     return(splits)
   } else {
     
+    split0 <- NULL
+    split1 <- NULL
+    
     # continue splitting
-    split0 <- decision_tree_classifier(
-      X = X_split[[1]], 
-      Y = Y_split[[1]], 
-      gini_threshold = gini_threshold, 
-      max_depth = max_depth, 
-      min_rows = min_rows, 
-      branch_id = paste0(branch_id, "0"),
-      splits = splits
-    )
-    split1 <- decision_tree_classifier(
-      X = X_split[[2]], 
-      Y = Y_split[[2]], 
-      gini_threshold = gini_threshold, 
-      max_depth = max_depth, 
-      min_rows = min_rows, 
-      branch_id = paste0(branch_id, "1"),
-      splits = splits
-    )
+    # the try will catch errors due to one split group having no observations
+    try({
+      split0 <- decision_tree_classifier(
+        X = X_split[[1]], 
+        Y = Y_split[[1]], 
+        gini_threshold = gini_threshold, 
+        max_depth = max_depth, 
+        min_observations = min_observations, 
+        branch_id = paste0(branch_id, "0"),
+        splits = splits
+      )
+    })
+    try({
+      split1 <- decision_tree_classifier(
+        X = X_split[[2]], 
+        Y = Y_split[[2]], 
+        gini_threshold = gini_threshold, 
+        max_depth = max_depth, 
+        min_observations = min_observations, 
+        branch_id = paste0(branch_id, "1"),
+        splits = splits
+      )
+    })
     
     # bind rows into a dataframe and remove duplicates caused by diverging branches
     all_splits <- distinct(bind_rows(split0, split1))
@@ -275,7 +291,7 @@ n <- 1000
                 X3 = rbinom(n, 1, prob = 0.5))
 X <- .data[, -1]
 Y <- .data[[1]]
-decision_tree <- decision_tree_classifier(X, Y)
+decision_tree <- decision_tree_classifier(X, Y, 0.1)
 decision_tree
 ```
 
@@ -336,7 +352,7 @@ n <- 1000
   labs(shape = NULL)
 ```
 ```{r include=FALSE}
-ggsave("~/Dropbox/Data/Projects/regression-trees/random_forest/plots/example_data.png", width = 8, height = 6)
+ggsave(file.path(wd, "random_forest/plots/example_data.png"), width = 8, height = 6)
 ```
 
 Let's try to classify this with a logistic regression.
@@ -359,7 +375,7 @@ model_log <- glm(Y ~ X1 + X2, data = .data, family = 'binomial')
        shape = NULL)
 ```
 ```{r include=FALSE}
-ggsave("~/Dropbox/Data/Projects/regression-trees/random_forest/plots/logistic_classes.png", width = 8, height = 6)
+ggsave(file.path(wd, "random_forest/plots/logistic_classes.png"), width = 8, height = 6)
 ```
 
 Logistic regression is performly poorly. Note that an interaction would help with model. These "square" data suit the decision tree classifier well. Below, the clasifier almost correctly classifies all points. The incorrect points all lie around the boundary between Class 0 and Class 1. I believe this is due to the `splits` in `optimal_split` not being granular enough.
@@ -368,7 +384,7 @@ Logistic regression is performly poorly. Note that an interaction would help wit
 ```{r plot_rpart_example}
 X <- .data[, -1]
 Y <- .data[[1]]
-model_decision_tree <- decision_tree_classifier(X, Y, max_depth = 5, gini_threshold = 0.01, min_rows = 3)
+model_decision_tree <- decision_tree_classifier(X, Y, max_depth = 5, gini_threshold = 0.01, min_observations = 3)
 preds <- predict_decision_tree(model_decision_tree, X)
 
 # plot it
@@ -385,7 +401,7 @@ preds <- predict_decision_tree(model_decision_tree, X)
        shape = NULL)
 ```
 ```{r include=FALSE}
-ggsave("~/Dropbox/Data/Projects/regression-trees/random_forest/plots/tree_classes.png", width = 8, height = 6)
+ggsave(file.path(wd, "random_forest/plots/tree_classes.png"), width = 8, height = 6)
 ```
 
 
@@ -393,7 +409,7 @@ We can visualize the splits made the decision tree classifier. As expected, thes
 
 
 ```{r}
-model_decision_tree
+head(model_decision_tree)
 ```
 ```{r}
 splits_X1 <- split(model_decision_tree, model_decision_tree$column)[[1]]
@@ -414,14 +430,14 @@ splits_X2 <- split(model_decision_tree, model_decision_tree$column)[[2]]
        shape = NULL)
 ```
 ```{r include=FALSE}
-ggsave("~/Dropbox/Data/Projects/regression-trees/random_forest/plots/tree_boundaries.png", width = 8, height = 6)
+ggsave(file.path(wd, "random_forest/plots/tree_boundaries.png"), width = 8, height = 6)
 ```
 
 ## Bagging
 
 
 ```{r bag_it}
-bag_it <- function(X, Y, n_trees = 100, max_depth = 5, gini_threshold = 0.2, min_rows = 5){
+bag_it <- function(X, Y, n_trees = 100, max_depth = 5, gini_threshold = 0.2, min_observations = 5){
   
   preds <- parallel::mclapply(1:n_trees, function(i){
     
@@ -432,7 +448,7 @@ bag_it <- function(X, Y, n_trees = 100, max_depth = 5, gini_threshold = 0.2, min
       Y_sampled <- Y[sample_indices]
       
       # fit model on subset and then make predictions on all data
-      model_decision_tree <- decision_tree_classifier(X_sampled, Y_sampled, max_depth = max_depth, gini_threshold = gini_threshold, min_rows = min_rows)
+      model_decision_tree <- decision_tree_classifier(X_sampled, Y_sampled, max_depth = max_depth, gini_threshold = gini_threshold, min_observations = min_observations)
       preds <- predict_decision_tree(model_decision_tree, X)
     },
     error = function(e) NA
@@ -447,13 +463,22 @@ bag_it <- function(X, Y, n_trees = 100, max_depth = 5, gini_threshold = 0.2, min
 }
 ```
 
+```{r}
+credit <- read_csv(file.path(wd, "data/credit.csv"))
+X_cols <- c('months_loan_duration', 'amount', 'existing_loans_count', 'percent_of_income', 'years_at_residence', 'age')
+X <- credit[, X_cols]
+Y <- credit$default == 'yes' 
+preds <- bag_it(X, Y, max_depth = 5, gini_threshold = 0.20, min_observations = 5)
+table(preds > 0.5, Y)
+```
+
 
 ## Random forest
 
 We use the square root of the number of columns as the sampling...
 
 ```{r random_forest}
-random_forest <- function(X, Y, n_trees = 100, max_depth = 5, gini_threshold = 0.2, min_rows = 5){
+random_forest <- function(X, Y, n_trees = 100, max_depth = 5, gini_threshold = 0.2, min_observations = 5){
   
   preds <- parallel::mclapply(1:n_trees, function(i){
     
@@ -470,7 +495,7 @@ random_forest <- function(X, Y, n_trees = 100, max_depth = 5, gini_threshold = 0
         Y_sampled, 
         max_depth = max_depth, 
         gini_threshold = gini_threshold, 
-        min_rows = min_rows
+        min_observations = min_observations
       )
       preds <- predict_decision_tree(model_decision_tree, X)
     },
@@ -486,6 +511,18 @@ random_forest <- function(X, Y, n_trees = 100, max_depth = 5, gini_threshold = 0
 }
 ```
 
+```{r}
+preds <- random_forest(X, Y, n_trees = 500, max_depth = 5, gini_threshold = 0.20, min_observations = 5)
+table(preds > 0.5, Y)
+```
+
+Compare this against the `ranger` package.
+
+```{r}
+model_ranger <- ranger::ranger(reformulate(X_cols, 'default'), data = credit, num.trees = 500)
+table(model_ranger$predictions, credit$default)
+```
+
 
 ## Conclusion
 
@@ -493,4 +530,3 @@ random_forest <- function(X, Y, n_trees = 100, max_depth = 5, gini_threshold = 0
 
 ## Limitations
 
-The predictions are done at the wrong level
