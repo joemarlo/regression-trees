@@ -1,0 +1,454 @@
+---
+title: "Random forest bottom up -- a tutorial"
+author: "Joe Marlo"
+date: "4/23/2021"
+output:
+  html_document: default
+  pdf_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE, fig.align = 'center')
+```
+
+## Why
+
+This is a step-by-step guide to build a random forest algorithm in "base" R from the bottom-up. We'll start with the Gini index then move to decision trees and then ensemble methods. R has many packages that include -- faster and better -- implementations of random forest. The goal of this guide is to walk through the fundamentals in an interpretable format. The final algorithm will be functional but it is not robust to bugs or programming edge cases. I.e. just use [`ranger`](https://arxiv.org/pdf/1508.04409.pdf) if you want a production algorithm.
+
+## Process
+
+Random forests are an ensemble model consisting of many decision trees. We must first create a decision tree classifier which themselves require an impurity metric and recursive algorithm to split the branches. The steps can broken down as:  
+- Define an impurity metric which drives each split in the decision tree  
+- Program a decision algorithm to choose the best data split based on the impurity measure  
+- Program a decision tree algorithm by recursively calling the decision algorithm  
+- Program a bagging model by implementing many decision trees and resampling the data  
+- Program a random forest model by implementing many decision trees, resampling the data, and sampling from the columns  
+
+
+## Set up
+
+Okay, it's not quite "base" R as we're going to use the `tidyverse` meta-package for general data munging and `parallel` for multi-core processing during bagging and the random forest. 
+
+```{r packages}
+library(tidyverse)
+library(parallel)
+options(mc.cores = detectCores())
+set.seed(44)
+```
+
+```{r include=FALSE}
+source("~/Dropbox/Data/Projects/wsb-discourse/analyses/plots/ggplot_settings.R")
+```
+
+## Gini index
+
+.... The output of `gini` is constrained to `[0, 0.5]`.
+
+```{r gini_function}
+gini <- function(p){
+  2 * p * (1 - p)
+}
+p <- seq(0, 1, 0.1)
+ggplot(tibble(p, gini(p)), aes(x = p, y = `gini(p)`)) +
+  geom_smooth(color = 'grey70', linetype = 'dashed') +
+  geom_point(size = 3)
+```
+
+For convenience, we're going to wrap the `gini` function so we feed it a vector instead of a probability. The probability is calculated from the mean value of the vector. In practice, this vector will be binary and represent classification labels.
+
+```{r gini_vectors}
+gini_vector <- function(X){
+  # X should be binary 0 1 or TRUE/FALSE
+  gini(mean(X, na.rm = TRUE))
+}
+X1 <- c(0, 0, 0, 1)
+gini_vector(X1)
+```
+
+Explain why it needs to be weighted
+
+```{r gini_weighted}
+gini_weighted <- function(X1, X2){
+  # X should be binary 0 1 or TRUE/FALSE
+  if (is.null(X1)) return(0)
+  if (is.null(X2)) return(1)
+  
+  prop_x1 <- length(X1) / (length(X1) + length(X2))
+  weighted_gini <- (prop_x1*gini_vector(X1)) + ((1-prop_x1)*gini_vector(X2))
+  return(weighted_gini)
+}
+X2 <- c(0, 0, 1, 1, 1)
+gini_weighted(X1, X2)
+```
+## Spliting
+
+```{r optimal_split}
+optimal_split <- function(X, classes, n_splits = 50){
+  # create "dividing lines" that split X into to parts
+  # a smarter version would account for X's values
+  splits <- seq(min(X), max(X), length.out = n_splits)
+  
+  gini_index <- sapply(splits, function(split){
+    X1 <- classes[X <= split]
+    X2 <- classes[X > split]
+    gini_index <- gini_weighted(X1, X2)
+    return(gini_index)
+  })
+
+  # choose the best split based on the minimum (most pure) gini value
+  gini_minimum <- min(gini_index, na.rm = TRUE)[1]
+  optimal_split <- na.omit(splits[gini_index == gini_minimum])[1]
+  
+  # best prediction for these data the mean of the classes
+  preds <- mean(classes, na.rm = TRUE)
+  
+  return(list(gini = gini_minimum, split_value = optimal_split, preds = preds))
+}
+X <- rnorm(10)
+classes <- rbinom(10, 1, 0.5)
+optimal_split(X, classes)
+```
+
+
+```{r optimal_split_plot }
+# plot the points and the optimal split
+tibble(x = X, y = 1, col = classes) %>%
+  ggplot(aes(x = x, y = y, color = as.factor(col))) +
+  geom_point(size = 7, alpha = 0.8) +
+  geom_vline(xintercept = optimal_split(X, classes)$split_value,
+             linetype = 'dashed') +
+  scale_y_continuous(labels = NULL) +
+  labs(color = 'Class',
+       y = NULL)
+```
+
+Best feature to split on
+
+
+```{r best_feature_to_split}
+best_feature_to_split <- function(X, Y){
+  # X must be a dataframe, Y a vector of 0:1
+
+  # get optimal split for each column
+  ginis <- sapply(X, function(x) optimal_split(x, Y))
+  
+  # return the the column with best split and its splitting value
+  best_gini <- min(unlist(ginis['gini',]))[1]
+  best_column <- names(which.min(ginis['gini',]))[1]
+  best_split <- ginis[['split_value', best_column]]
+  pred <- ginis[['preds', best_column]]
+  return(list(column = best_column, gini = best_gini, split = best_split, pred = pred))
+}
+n <- 1000
+.data <- tibble(Y = rbinom(n, 1, prob = 0.3),
+                X1 = rnorm(n),
+                X2 = rnorm(n),
+                X3 = rbinom(n, 1, prob = 0.5))
+X <- .data[, -1]
+Y <- .data[[1]]
+best_feature_to_split(.data[, -1], .data[[1]])
+```
+## Decision trees
+
+### Recursion
+
+To create the decision trees, we need to apply the spliting algorithm until it reaches a certain stopping threshold. We won't know prior how many splits it is going to make -- the depth or the width. Therefore we cannot use a `while` loop because a split results in two new branches. A standard `while` loop can only account for a single, direct process. We need to use [recursion](). 
+
+In recursive functions, the function itself is called within itself until some stopping criteria is met. It will run indefinitely without the stopping criteria. A simple example is the [quicksort]() algorithm which sorts a vector of numbers from smallest to greatest. 
+
+Quicksort splits the vector into two vectors based on a pivot point. Points smaller than the pivot go to one vector, points larger to the other vector. The pivot point can be any point but is often the first or last. The function is called on itself to repeat the splitting until one or less numbers exist in a split. Then these sorted child-vectors are passed upward through the recursed functions. 
+
+See the below example.
+
+```{r quicksort}
+quick_sort <- function(X){
+  # stop if X is length 1 or less
+  if (length(X) <= 1) return(X)
+  
+  # create the pivot point and remove it from the vector
+  pivot_point <- X[1]
+  X_vec <- X[-1]
+  
+  # create the lower and upper vectors
+  lower_vec <- X_vec[X_vec <= pivot_point]
+  upper_vec <- X_vec[X_vec > pivot_point]
+  
+  # call the function recursively
+  lower_sorted <- quick_sort(lower_vec)
+  upper_sorted <- quick_sort(upper_vec)
+  
+  # return the sorted vector
+  return(c(lower_sorted, pivot_point, upper_sorted))
+}
+X <- rnorm(20)
+quick_sort(X)
+```
+
+### Recursive branching
+
+We're going to pull together all the above functions into one recursive function that becomes the decision tree classifier. 
+
+```{r decision_tree_classifier}
+# create a dataframe denoting the best splits
+decision_tree_classifier <- function(X, Y, gini_threshold = 0.4, max_depth = 5, min_rows = 5, branch_id = '0', splits = NULL){
+  
+  # calculate the first best split
+  first_split <- best_feature_to_split(X, Y)
+  
+  # log the split
+  if (is.null(splits)) splits <- tibble()
+  splits <- bind_rows(splits, tibble(column = first_split$column, 
+                                     split = first_split$split,
+                                     pred = first_split$pred,
+                                     branch = branch_id))
+  
+  # calculate current branch depth
+  branch_depth <- splits %>%
+    rowwise() %>%
+    filter(branch == str_sub(branch_id, 0, nchar(branch))) %>%
+    nrow()
+
+  # create two dataframes based on the first split
+  X_split <- split(X, X[first_split$column] >= first_split$split)
+  Y_split <- split(Y, X[first_split$column] >= first_split$split)
+  
+  # return the current list of splits or continue splitting
+  is_too_deep <- isTRUE(branch_depth >= max_depth)
+  is_pure_enough <- isTRUE(first_split$gini <= gini_threshold)
+  too_few_observations <- isTRUE(min(sapply(X_split, nrow)) < min_rows)
+  if (is_too_deep | is_pure_enough | too_few_observations){
+    return(splits)
+  } else {
+    
+    # continue splitting
+    split1 <- decision_tree_classifier(
+      X = X_split[[1]], 
+      Y = Y_split[[1]], 
+      gini_threshold = gini_threshold, 
+      max_depth = max_depth, 
+      min_rows = min_rows, 
+      branch_id = paste0(branch_id, "0"),
+      splits = splits
+    )
+    split2 <- decision_tree_classifier(
+      X = X_split[[2]], 
+      Y = Y_split[[2]], 
+      gini_threshold = gini_threshold, 
+      max_depth = max_depth, 
+      min_rows = min_rows, 
+      branch_id = paste0(branch_id, "1"),
+      splits = splits
+    )
+    
+    # bind rows into a dataframe and remove duplicates caused by diverging branches
+    all_splits <- distinct(bind_rows(split1, split2))
+    
+    return(all_splits)
+  }
+}
+n <- 1000
+.data <- tibble(Y = rbinom(n, 1, prob = 0.3),
+                X1 = rnorm(n),
+                X2 = rnorm(n),
+                X3 = rbinom(n, 1, prob = 0.5))
+X <- .data[, -1]
+Y <- .data[[1]]
+decision_tree <- decision_tree_classifier(X, Y)
+decision_tree
+```
+
+Predict a new observation In this case, we're only predicting in-sample observations.
+
+```{r predict_data_point}
+# predict a new data point
+predict_data_point <- function(model_decision_tree, new_row, branch_id = '0'){
+  
+  # traverse the decision tree and get the next split
+  decision_point <- model_decision_tree[model_decision_tree$branch == branch_id,]
+  decision_split <- new_row[, decision_point$column] < decision_point$split
+  decision_split <- if_else(decision_split, 0, 1) 
+  branch_id <- paste0(branch_id, decision_split)
+  
+  # if next branch_id is not in the decision tree then return the current prediction
+  if (!(branch_id %in% model_decision_tree$branch)){
+    return(decision_point$pred) 
+  } else {
+    # otherwise continue recursion
+    return(predict_data_point(model_decision_tree, new_row, branch_id))
+  }
+}
+predict_data_point(decision_tree, X[1,])
+```
+Wrap the `predict_data_point` function in a loop so we can predict all observations in a dataframe.
+
+```{r predict_decision_tree}
+# predict all datapoints in a dataframe
+predict_decision_tree <- function(model_decision_tree, new_data){
+  preds <- rep(NULL, nrow(new_data))
+  for (i in 1:nrow(new_data)){
+    preds[i] <- predict_data_point(model_decision_tree, new_row = new_data[i,])
+  }
+  return(preds)
+}
+preds <- predict_decision_tree(decision_tree, X)
+```
+
+
+Now finally we can test our decision tree classifier on data. Decision trees perform best on data split horizontally and/or vertically -- i.e. on data where linear regression or logistical regression tends to perform poorly. Here we create data in an sideways "L" shape where the bottom right quadrant contains data of Class 1, all other quadrants are Class 0.  
+
+```{r}
+# create a two dimensional dataset
+n <- 1000
+.data <- tibble(Y = c(rep(0, n/4), rep(0, n/4), rep(0, n/4), rep(1, n/4)),
+                X1 = c(runif(n/4, -1, 0), runif(n/4, -1, 0), runif(n/4, 0, 1), runif(n/4, 0, 1)),
+                X2 = c(runif(n/4, -1, 0), runif(n/4, 0, 1), runif(n/4, 0, 1), runif(n/4, -1, 0)))
+
+# plot it
+.data %>% 
+  mutate(Y = paste0("Class ", Y)) %>% 
+  ggplot(aes(x = X1, y = X2, shape = Y)) +
+  geom_vline(xintercept = 0, linetype = 'dashed') +
+  geom_hline(yintercept = 0, linetype = 'dashed') +
+  geom_point(size = 3, alpha = 0.5) +
+  labs(shape = NULL)
+```
+
+Let's try to classify this with a logistic regression.
+
+```{r}
+# logistic regression
+model_log <- glm(Y ~ X1 + X2, data = .data, family = 'binomial')
+
+# plot it
+.data %>% 
+  mutate(preds = model_log$fitted.values > 0.5, 
+         correct = if_else(preds == Y, "Correct classification", "Incorrect"),
+         Y = paste0("Class ", Y)) %>% 
+  ggplot(aes(x = X1, y = X2, shape = Y, color = correct)) +
+  geom_vline(xintercept = 0, linetype = 'dashed') +
+  geom_hline(yintercept = 0, linetype = 'dashed') +
+  geom_point(size = 3, alpha = 0.5) +
+  scale_color_manual(values = c('gray30', 'red')) +
+  labs(color = NULL,
+       shape = NULL)
+```
+Logistic regression is performly poorly. Note that an interaction would help with model. These "square" data suit the decision tree classifier well. Below, the clasifier almost correctly classifies all points. The incorrect points all lie around the boundary between Class 0 and Class 1. I believe this is due to the `splits` in `optimal_split` not being granular enough.
+
+
+```{r plot_rpart_example}
+X <- .data[, -1]
+Y <- .data[[1]]
+model_decision_tree <- decision_tree_classifier(X, Y, max_depth = 5, gini_threshold = 0.01, min_rows = 3)
+preds <- predict_decision_tree(model_decision_tree, X)
+
+# plot it
+.data %>% 
+  mutate(preds = preds > 0.5, 
+         correct = if_else(preds == Y, "Correct classification", "Incorrect"),
+         Y = paste0("Class ", Y)) %>% 
+  ggplot(aes(x = X1, y = X2, shape = Y, color = correct)) +
+  geom_vline(xintercept = 0, linetype = 'dashed') +
+  geom_hline(yintercept = 0, linetype = 'dashed') +
+  geom_point(size = 3, alpha = 0.5) +
+  scale_color_manual(values = c('gray30', 'red')) +
+  labs(color = NULL,
+       shape = NULL)
+```
+
+We can visualize the splits made the decision tree classifier. As expected, these splits are right along the quadrant boundaries.
+
+
+```{r}
+model_decision_tree
+```
+```{r}
+splits_X1 <- split(model_decision_tree, model_decision_tree$column)[[1]]
+splits_X2 <- split(model_decision_tree, model_decision_tree$column)[[2]]
+
+.data %>% 
+  mutate(preds = preds > 0.5, 
+         correct = if_else(preds == Y, "Correct classification", "Incorrect"),
+         Y = paste0("Class ", Y)) %>% 
+  ggplot(aes(x = X1, y = X2, shape = Y, color = correct)) +
+  geom_vline(xintercept = 0, linetype = 'dashed') +
+  geom_hline(yintercept = 0, linetype = 'dashed') +
+  geom_vline(data = splits_X1, aes(xintercept = split), color = 'blue') +
+  geom_hline(data = splits_X2, aes(yintercept = split), color = 'blue') +
+  geom_point(size = 3, alpha = 0.5) +
+  scale_color_manual(values = c('gray30', 'red')) +
+  labs(color = NULL,
+       shape = NULL)
+```
+
+
+## Bagging
+
+
+```{r bag_it}
+bag_it <- function(X, Y, n_trees = 100, max_depth = 5, gini_threshold = 0.2, min_rows = 5){
+  
+  preds <- parallel::mclapply(1:n_trees, function(i){
+    
+    preds <- tryCatch({
+      # bootstrap the data
+      sample_indices <- sample(1:nrow(X), size = nrow(X), replace = TRUE)
+      X_sampled <- X[sample_indices,]
+      Y_sampled <- Y[sample_indices]
+      
+      # fit model on subset and then make predictions on all data
+      model_decision_tree <- decision_tree_classifier(X_sampled, Y_sampled, max_depth = max_depth, gini_threshold = gini_threshold, min_rows = min_rows)
+      preds <- predict_decision_tree(model_decision_tree, X)
+    },
+    error = function(e) NA
+    )
+    
+    return(tibble(preds))
+  }) %>% bind_cols()
+  
+  # average the predictions across each model's prediction
+  preds <- rowMeans(preds, na.rm = TRUE)
+  return(preds)
+}
+```
+
+
+## Random forest
+
+We use the square root of the number of columns as the sampling...
+
+```{r random_forest}
+random_forest <- function(X, Y, n_trees = 100, max_depth = 5, gini_threshold = 0.2, min_rows = 5){
+  
+  preds <- parallel::mclapply(1:n_trees, function(i){
+    
+    preds <- tryCatch({
+      # bootstrap the data
+      sample_indices <- sample(1:nrow(X), size = nrow(X), replace = TRUE)
+      sample_columns <- sample(1:ncol(X), size = ceiling(sqrt(ncol(X))), replace = FALSE)
+      X_sampled <- X[sample_indices, sample_columns]
+      Y_sampled <- Y[sample_indices]
+      
+      # fit model on subset and then make predictions on all data
+      model_decision_tree <- decision_tree_classifier(
+        X_sampled, 
+        Y_sampled, 
+        max_depth = max_depth, 
+        gini_threshold = gini_threshold, 
+        min_rows = min_rows
+      )
+      preds <- predict_decision_tree(model_decision_tree, X)
+    },
+    error = function(e) NA
+    )
+    
+    return(tibble(preds))
+  }) %>% bind_cols()
+  
+  # average the predictions across each model's prediction
+  preds <- rowMeans(preds, na.rm = TRUE)
+  return(preds)
+}
+```
+
+
+## Conclusion
