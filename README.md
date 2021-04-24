@@ -1,2 +1,2 @@
-# regression-trees
-Tutorials
+# Tutorial(s) on regression trees
+
