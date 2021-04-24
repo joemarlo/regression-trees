@@ -9,23 +9,40 @@ output:
 
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE, fig.align = 'center')
+wd <- '~/Dropbox/Data/Projects/regression-trees'
 ```
 
 ## Why
 
-This is a step-by-step guide to build a random forest classification algorithm in "base" R from the bottom-up. We'll start with the Gini impurity metric then move to decision trees and then ensemble methods. R has many packages that include -- faster and better -- implementations of random forest. The goal of this guide is to walk through the fundamentals. The final algorithm will be functional but it is not robust to bugs or programming edge cases. Just use [`ranger`](https://arxiv.org/pdf/1508.04409.pdf) if you want a production algorithm.
+This is a step-by-step guide to build a random forest classification algorithm in "base" R from the bottom-up. We'll start with the Gini impurity metric then move to decision trees and then ensemble methods. R has many packages that include -- faster and better -- implementations of random forest. The goal of this guide is to walk through the fundamentals. The final algorithm will be functional but it is not robust to bugs or programming edge cases. The goal is to provide you with an accurate mental model of how random forest works and, therefore, intuition to where it will perform well and where it fall short.
 
 ## Process
 
 Random forests are an ensemble model consisting of many decision trees. We must first create a decision tree classifier which themselves require an impurity metric and recursive algorithm to split the branches. The steps to build a random forest can broken down to:  
-- Define an impurity metric which drives each split in the decision tree  
-- Program a decision algorithm to choose the best data split based on the impurity measure  
-- Program a decision tree algorithm by recursively calling the decision algorithm  
-- Program a bagging model by implementing many decision trees and resampling the data  
-- Program a random forest model by implementing many decision trees, resampling the data, and sampling from the columns  
+
+  - Define an impurity metric which drives each split in the decision tree  
+  - Program a decision algorithm to choose the best data split based on the impurity measure  
+  - Program a decision tree algorithm by recursively calling the decision algorithm  
+  - Program a bagging model by implementing many decision trees and resampling the data  
+  - Program a random forest model by implementing many decision trees, resampling the data, and sampling from the columns  
 
 ## Intuition
 
+Binary decision trees create an interpretable decision making framework for making a single prediction. Suppose a patient comes into your clinic with chest pain and you wish to diagnose them with either a heart attack or not a heart attack. A simple framework of coming to that diagnosis could look like the following. 
+
+<p align="center">
+<img src="plots/diagram.png" width=50%>
+</p>
+
+Note that each split results in two outcomes (binary) and every possible condition leads to a terminal node. The model's splits can also be visualized has partitioning the parameter space. Since the decision tree makes binary splits along a parameter, the resulting boundaries will always be rectangular.
+
+<p align="center">
+<img src="plots/diagram_parameters.png" width=50%>
+</p>
+
+But where to split the data? The splits are determined via an impurity index. With each split, the algorithm is trying to maximize the purity of the resulting splits. So if a potential split results in classes `[HA, HA]` and [`NHA`, `NHA`] then that is better than another potential split that results `[HA, NHA]` and `[NHA, HA]`. At each node, all possible splits are tested and the split that maximizes purity is chosen.
+
+For classification problems, a commonly used metric is [Gini impurity](https://en.wikipedia.org/wiki/Decision_tree_learning#Gini_impurity). Gini impurity is `2 * p * (1 - p)` where `p` is the fraction of elements labeled as the class of interest. A value of `0` is a completely homogeneous vector while `0.5` is the inverse. The vector `[NHA, HA, NHA]` has a Gini value of `2 * 1/3 * 2/3 = 0.444`. Since the data is split into two vectors, the value is weighted by the respective lengths of the two vectors. 
 
 
 ## Setup
@@ -40,13 +57,12 @@ set.seed(44)
 ```
 
 ```{r include=FALSE}
-wd <- '~/Dropbox/Data/Projects/regression-trees'
 source(file.path(wd, "helpers/ggplot_settings.R"))
 ```
 
-## Gini index
+## Gini impurity
 
-.... The output of `gini` is constrained to `[0, 0.5]`.
+We're going to build the random forest algorithm starting with the smallest component: the Gini impurity metric. Note that the output of `gini` is constrained to `[0, 0.5]`.
 
 ```{r gini_function, fig.height=4, fig.width=8}
 gini <- function(p){
@@ -70,11 +86,11 @@ gini_vector <- function(X){
   # X should be binary 0 1 or TRUE/FALSE
   gini(mean(X, na.rm = TRUE))
 }
-X1 <- c(0, 0, 0, 1)
+X1 <- c(0, 1, 0)
 gini_vector(X1)
 ```
 
-Explain why it needs to be weighted
+And finally we're going to wrap it again so it gives us the weighted Gini of two vectors,
 
 ```{r gini_weighted}
 gini_weighted <- function(X1, X2){
@@ -86,10 +102,12 @@ gini_weighted <- function(X1, X2){
   weighted_gini <- (prop_x1*gini_vector(X1)) + ((1-prop_x1)*gini_vector(X2))
   return(weighted_gini)
 }
-X2 <- c(0, 0, 1, 1, 1)
+X2 <- c(1, 1, 1)
 gini_weighted(X1, X2)
 ```
 ## Spliting
+
+lorem ipsum
 
 ```{r optimal_split}
 optimal_split <- function(X, classes, n_splits = 50){
@@ -110,11 +128,11 @@ optimal_split <- function(X, classes, n_splits = 50){
   gini_minimum <- min(gini_index, na.rm = TRUE)
   optimal_split <- na.omit(splits[gini_index == gini_minimum])[1]
   
-  # best prediction for these data are mean of the classes
+  # best prediction for these data are the means of the classes
   classes_split <- split(classes, X <= optimal_split)
-  preds <- list(split0 = mean(classes_split[[2]], na.rm = TRUE), 
-                split1 = mean(classes_split[[1]], na.rm = TRUE))
-  # preds <- mean(classes, na.rm = TRUE)
+  split0 <- tryCatch(mean(classes_split[[2]], na.rm = TRUE), error = function(e) NULL)
+  split1 <- tryCatch(mean(classes_split[[1]], na.rm = TRUE),  error = function(e) NULL)
+  preds <- list(split0 = split0, split1 = split1)
   
   return(list(gini = gini_minimum, split_value = optimal_split, preds = preds))
 }
@@ -232,7 +250,7 @@ decision_tree_classifier <- function(X, Y, gini_threshold = 0.4, max_depth = 5, 
                                      pred = list(first_split$pred),
                                      branch = branch_id))
   
-  # calculate current branch depth
+  # calculate current branch depth 
   branch_depth <- splits %>%
     rowwise() %>%
     filter(branch == str_sub(branch_id, 0, nchar(branch))) %>%
@@ -249,25 +267,23 @@ decision_tree_classifier <- function(X, Y, gini_threshold = 0.4, max_depth = 5, 
   if (is_too_deep | is_pure_enough | too_few_observations){
     return(splits)
   } else {
-    
-    split0 <- NULL
-    split1 <- NULL
-    
+
     # continue splitting
     # the try will catch errors due to one split group having no observations
-    try({
-      split0 <- decision_tree_classifier(
-        X = X_split[[1]], 
-        Y = Y_split[[1]], 
-        gini_threshold = gini_threshold, 
-        max_depth = max_depth, 
-        min_observations = min_observations, 
+    split0 <- tryCatch({
+      decision_tree_classifier(
+        X = X_split[[1]],
+        Y = Y_split[[1]],
+        gini_threshold = gini_threshold,
+        max_depth = max_depth,
+        min_observations = min_observations,
         branch_id = paste0(branch_id, "0"),
         splits = splits
       )
-    })
-    try({
-      split1 <- decision_tree_classifier(
+    }, error = function(e) NULL
+    )
+    split1 <- tryCatch({
+      decision_tree_classifier(
         X = X_split[[2]], 
         Y = Y_split[[2]], 
         gini_threshold = gini_threshold, 
@@ -276,7 +292,8 @@ decision_tree_classifier <- function(X, Y, gini_threshold = 0.4, max_depth = 5, 
         branch_id = paste0(branch_id, "1"),
         splits = splits
       )
-    })
+    }, error = function(e) NULL
+    )
     
     # bind rows into a dataframe and remove duplicates caused by diverging branches
     all_splits <- distinct(bind_rows(split0, split1))
@@ -284,6 +301,10 @@ decision_tree_classifier <- function(X, Y, gini_threshold = 0.4, max_depth = 5, 
     return(all_splits)
   }
 }
+```
+
+
+```{r}
 n <- 1000
 .data <- tibble(Y = rbinom(n, 1, prob = 0.3),
                 X1 = rnorm(n),
@@ -318,6 +339,7 @@ predict_data_point <- function(model_decision_tree, new_row, branch_id = '0'){
 }
 predict_data_point(decision_tree, X[1,])
 ```
+
 Wrap the `predict_data_point` function in a loop so we can predict all observations in a dataframe.
 
 ```{r predict_decision_tree}
@@ -370,7 +392,7 @@ model_log <- glm(Y ~ X1 + X2, data = .data, family = 'binomial')
   geom_vline(xintercept = 0, linetype = 'dashed') +
   geom_hline(yintercept = 0, linetype = 'dashed') +
   geom_point(size = 3, alpha = 0.5) +
-  scale_color_manual(values = c('gray30', 'red')) +
+  scale_color_manual(values = c('#5f7d71', 'red')) +
   labs(color = NULL,
        shape = NULL)
 ```
@@ -396,7 +418,7 @@ preds <- predict_decision_tree(model_decision_tree, X)
   geom_vline(xintercept = 0, linetype = 'dashed') +
   geom_hline(yintercept = 0, linetype = 'dashed') +
   geom_point(size = 3, alpha = 0.5) +
-  scale_color_manual(values = c('gray30', 'red')) +
+  scale_color_manual(values = c('#5f7d71', 'red')) +
   labs(color = NULL,
        shape = NULL)
 ```
@@ -425,7 +447,7 @@ splits_X2 <- split(model_decision_tree, model_decision_tree$column)[[2]]
   geom_vline(data = splits_X1, aes(xintercept = split), color = 'blue') +
   geom_hline(data = splits_X2, aes(yintercept = split), color = 'blue') +
   geom_point(size = 3, alpha = 0.5) +
-  scale_color_manual(values = c('gray30', 'red')) +
+  scale_color_manual(values = c('#5f7d71', 'red')) +
   labs(color = NULL,
        shape = NULL)
 ```
@@ -458,18 +480,19 @@ bag_it <- function(X, Y, n_trees = 100, max_depth = 5, gini_threshold = 0.2, min
   }) %>% bind_cols()
   
   # average the predictions across each model's prediction
+  # this is how each tree "votes"
   preds <- rowMeans(preds, na.rm = TRUE)
   return(preds)
 }
 ```
 
 ```{r}
-credit <- read_csv(file.path(wd, "data/credit.csv"))
-X_cols <- c('months_loan_duration', 'amount', 'existing_loans_count', 'percent_of_income', 'years_at_residence', 'age')
-X <- credit[, X_cols]
-Y <- credit$default == 'yes' 
-preds <- bag_it(X, Y, max_depth = 5, gini_threshold = 0.20, min_observations = 5)
-table(preds > 0.5, Y)
+# credit <- read_csv(file.path(wd, "data/credit.csv"))
+# X_cols <- c('months_loan_duration', 'amount', 'existing_loans_count', 'percent_of_income', 'years_at_residence', 'age')
+# X <- credit[, X_cols]
+# Y <- credit$default == 'yes' 
+# preds <- bag_it(X, Y, max_depth = 5, gini_threshold = 0.20, min_observations = 5)
+# table(preds > 0.5, Y)
 ```
 
 
@@ -506,21 +529,22 @@ random_forest <- function(X, Y, n_trees = 100, max_depth = 5, gini_threshold = 0
   }) %>% bind_cols()
   
   # average the predictions across each model's prediction
+  # this is how each tree "votes"
   preds <- rowMeans(preds, na.rm = TRUE)
   return(preds)
 }
 ```
 
 ```{r}
-preds <- random_forest(X, Y, n_trees = 500, max_depth = 5, gini_threshold = 0.20, min_observations = 5)
-table(preds > 0.5, Y)
+# preds <- random_forest(X, Y, n_trees = 500, max_depth = 5, gini_threshold = 0.20, min_observations = 5)
+# table(preds > 0.5, Y)
 ```
 
 Compare this against the `ranger` package.
 
 ```{r}
-model_ranger <- ranger::ranger(reformulate(X_cols, 'default'), data = credit, num.trees = 500)
-table(model_ranger$predictions, credit$default)
+# model_ranger <- ranger::ranger(reformulate(X_cols, 'default'), data = credit, num.trees = 500)
+# table(model_ranger$predictions, credit$default)
 ```
 
 
@@ -529,4 +553,7 @@ table(model_ranger$predictions, credit$default)
 
 
 ## Limitations
+
+This method excludes categorically variables but dummy coding them will work.
+
 
