@@ -37,14 +37,14 @@ set.seed(44)
 ```
 
 ```{r include=FALSE}
-source("~/Dropbox/Data/Projects/wsb-discourse/analyses/plots/ggplot_settings.R")
+source("~/Dropbox/Data/Projects/regression-trees/helpers/ggplot_settings.R")
 ```
 
 ## Gini index
 
 .... The output of `gini` is constrained to `[0, 0.5]`.
 
-```{r gini_function}
+```{r gini_function, fig.height=4, fig.width=8}
 gini <- function(p){
   2 * p * (1 - p)
 }
@@ -110,13 +110,15 @@ optimal_split(X, classes)
 ```
 
 
-```{r optimal_split_plot }
+```{r optimal_split_plot, fig.height=3, fig.width=8}
 # plot the points and the optimal split
-tibble(x = X, y = 1, col = classes) %>%
+tibble(x = X, y = 0, col = classes) %>%
   ggplot(aes(x = x, y = y, color = as.factor(col))) +
   geom_point(size = 7, alpha = 0.8) +
   geom_vline(xintercept = optimal_split(X, classes)$split_value,
              linetype = 'dashed') +
+  annotate('text', x = optimal_split(X, classes)$split_value, y = 0,
+           label = 'Optimal split', hjust = -0.1, vjust = -3) +
   scale_y_continuous(labels = NULL) +
   labs(color = 'Class',
        y = NULL)
