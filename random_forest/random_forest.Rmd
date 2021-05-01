@@ -70,8 +70,8 @@ gini <- function(p){
 ```{r gini_plot, echo=FALSE, fig.height=4, fig.width=8}
 p <- seq(0, 1, 0.1)
 ggplot(tibble(p, gini(p)), aes(x = p, y = `gini(p)`)) +
-  geom_smooth(color = 'grey70', linetype = 'dashed') +
-  geom_point(size = 3) +
+  geom_smooth(color = 'grey40', method = 'loess') +
+  # geom_point(size = 3) +
   labs(title = "gini(p) is constrained to [0, 0.5]")
 ```
 ```{r include=FALSE}
@@ -415,7 +415,58 @@ ggsave(file.path(wd, "random_forest/plots/tree_classes.png"), width = 8, height 
 
 We can visualize the splits made by the decision tree classifier. They should be right along the rectangle boundaries. Note that these lines do not reflect the order of the splits -- the lines would need to be truncated at their parent node's line similar to the diagram in the introduction.
 
-```{r}
+```{r eval=FALSE, include=FALSE}
+#### hack attempt to draw lines properly
+tmp <- model_decision_tree %>% 
+  mutate(level = nchar(branch)) %>% 
+  rowwise() %>% 
+  group_split() %>% 
+  .[-1] %>% 
+  map(function(row){
+    parent_row <- model_decision_tree %>% 
+      filter(branch == str_sub(row$branch[[1]], 0, nchar(row$branch[[1]])-1))
+    
+    row$parent_branch <- parent_row$branch[[1]]
+    row$parent_split <- parent_row$split[[1]]
+    row$parent_column <- parent_row$column[[1]]
+    row$split_direction <- as.numeric(str_sub(row$branch[[1]], nchar(row$branch[[1]])))
+    # row$split_max <- ifelse(row$split_direction == 0, min()))
+    # row$split_min <- ifelse(row$split_direction == 0, min()))
+    
+    return(row)
+  }) %>% 
+  bind_rows()
+
+# split between horizontal and vertical lines
+splits_X1 <- tryCatch(split(tmp, tmp$column)[['X1']], error = function(e) tibble())
+splits_X2 <- tryCatch(split(tmp, tmp$column)[['X2']], error = function(e) tibble())
+split_original_X1 <- tryCatch(split(model_decision_tree[1,], model_decision_tree[1,]$column)[['X1']], error = function(e) tibble())
+split_original_X2 <- tryCatch(split(model_decision_tree[1,], model_decision_tree[1,]$column)[['X2']], error = function(e) tibble())
+  
+# plot it
+p <- .data %>% 
+  mutate(preds = preds > 0.5, 
+         correct = if_else(preds == Y, "Correct classification", "Incorrect"),
+         Y = paste0("Class ", Y)) %>% 
+  ggplot() +
+  geom_point(aes(x = X1, y = X2, shape = Y, color = correct), size = 3, alpha = 0.5) +
+  scale_shape_manual(values = c(1, 19)) +
+  scale_color_manual(values = c('#5f7d71', 'red')) +
+  labs(color = NULL,
+       shape = NULL)
+
+if (!is.null(split_original_X1)) p <- p + geom_vline(data = split_original_X1, aes(xintercept = split), color = 'grey10')
+if (!is.null(split_original_X2)) p <- p + geom_hline(data = split_original_X2, aes(yintercept = split), color = 'grey10')
+if (!is.null(splits_X1)) p <- p + geom_segment(data = splits_X1, aes(x = split, xend = split, y = split_direction, yend = parent_split))
+if (!is.null(splits_X2)) p <- p + geom_segment(data = splits_X2, aes(x = split_direction, xend = parent_split, y = split, yend = split))
+
+p
+
+
+```
+
+```{r echo=FALSE}
+# split between horizontal and vertical lines
 splits_X1 <- split(model_decision_tree, model_decision_tree$column)[[1]]
 splits_X2 <- split(model_decision_tree, model_decision_tree$column)[[2]]
 
