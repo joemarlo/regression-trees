@@ -12,6 +12,8 @@ knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE, fig.align =
 wd <- '~/Dropbox/Data/Projects/regression-trees'
 ```
 
+Note: All code here is still considered the master version, but please see marlo.works/random-forest for the latest text. 
+
 This is a step-by-step guide to build a random forest classification algorithm in "base" R from the bottom-up. We will start with the Gini impurity metric then move to decision trees and then ensemble methods. R has many packages that include -- faster and more flexible -- implementations of random forest. The goal of this guide is to walk through the fundamentals. The final algorithm will be functional but it is not robust to bugs or programming edge cases. The goal is to provide you with an accurate mental model of how random forest works and, therefore, intuition to where it will perform well and where it falls short.
 
 ## Process
@@ -234,11 +236,15 @@ The function recursively calls the `best_feature_to_split()` function until one 
 
 ```{r decision_tree_classifier}
 # create a dataframe denoting the best splits
-decision_tree_classifier <- function(X, Y, gini_threshold = 0.4, max_depth = 5, min_observations = 5, branch_id = '0', splits = NULL){
+decision_tree_classifier <- function(X, Y, gini_threshold = 0.4, max_depth = 5, min_observations = 5, branch_id = '0', splits = NULL,  m_features = ncol(X)){
   
+  # sample the columns -- for use later in random forest
+  m_features_clean <- min(ncol(X), max(2, m_features))
+  sampled_cols <- sample(1:ncol(X), size = max(1, m_features_clean), replace = FALSE)
+  X_sampled <- X[, sampled_cols]
   
   # calculate the first optimal split
-  first_split <- best_feature_to_split(X, Y)
+  first_split <- best_feature_to_split(X_sampled, Y)
   
   # save the splits
   if (is.null(splits)) splits <- tibble()
@@ -269,7 +275,8 @@ decision_tree_classifier <- function(X, Y, gini_threshold = 0.4, max_depth = 5, 
         max_depth = max_depth,
         min_observations = min_observations,
         branch_id = paste0(branch_id, "0"),
-        splits = splits
+        splits = splits,
+        m_features = m_features
       )
     }, error = function(e) NULL
     )
@@ -281,7 +288,8 @@ decision_tree_classifier <- function(X, Y, gini_threshold = 0.4, max_depth = 5, 
         max_depth = max_depth, 
         min_observations = min_observations, 
         branch_id = paste0(branch_id, "1"),
-        splits = splits
+        splits = splits,
+        m_features = m_features
       )
     }, error = function(e) NULL
     )
@@ -300,7 +308,7 @@ n <- 1000
                 X3 = rbinom(n, 1, prob = 0.5))
 X <- .data[, -1]
 Y <- .data[[1]]
-decision_tree <- decision_tree_classifier(X, Y, 0.1)
+decision_tree <- decision_tree_classifier(X, Y, gini_threshold = 0.1)
 decision_tree
 ```
 
@@ -625,10 +633,10 @@ table(preds > 0.5, Y_test)
 
 ## Random forest
 
-Random forest is like bagging except that in addition to bootstrapping the observations, you also take a random subset of the features. The rule-of-thumb sample size is the square root of the total number of features.
+Random forest is like bagging except that in addition to bootstrapping the observations, you also take a random subset of the features. The rule-of-thumb sample size is the square root of the total number of features. We'll take advantage of the optional `m_features` argument we added earlier to `decision_tree_classifier()`.
 
 ```{r random_forest}
-random_forest <- function(X_train, Y_train, X_test, n_trees = 100, max_depth = 5, gini_threshold = 0.2, min_observations = 5){
+random_forest <- function(X_train, Y_train, X_test, n_trees = 100, m_features = ceiling(sqrt(ncol(X_train))), max_depth = 5, gini_threshold = 0.2, min_observations = 5){
   
   # grow the trees
   preds <- parallel::mclapply(1:n_trees, function(i){
@@ -636,8 +644,7 @@ random_forest <- function(X_train, Y_train, X_test, n_trees = 100, max_depth = 5
     preds <- tryCatch({
       # bootstrap the data
       sample_indices <- sample(1:nrow(X_train), size = nrow(X_train), replace = TRUE)
-      sample_columns <- sample(1:ncol(X_train), size = ceiling(sqrt(ncol(X_train))), replace = FALSE)
-      X_sampled <- X_train[sample_indices, sample_columns]
+      X_sampled <- X_train[sample_indices,]
       Y_sampled <- Y_train[sample_indices]
       
       # fit model on subset and then make predictions on all data
@@ -646,7 +653,8 @@ random_forest <- function(X_train, Y_train, X_test, n_trees = 100, max_depth = 5
         Y_sampled, 
         max_depth = max_depth, 
         gini_threshold = gini_threshold, 
-        min_observations = min_observations
+        min_observations = min_observations,
+        m_features = m_features
       )
       preds <- predict_decision_tree(model_decision_tree, X_test)
     },
