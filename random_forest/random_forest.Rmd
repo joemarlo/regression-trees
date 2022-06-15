@@ -240,7 +240,7 @@ decision_tree_classifier <- function(X, Y, gini_threshold = 0.4, max_depth = 5, 
   
   # sample the columns -- for use later in random forest
   m_features_clean <- min(ncol(X), max(2, m_features))
-  sampled_cols <- sample(1:ncol(X), size = max(1, m_features_clean), replace = FALSE)
+  sampled_cols <- sample(1:ncol(X), size = m_features_clean, replace = FALSE)
   X_sampled <- X[, sampled_cols]
   
   # calculate the first optimal split
